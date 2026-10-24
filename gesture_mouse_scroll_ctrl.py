@@ -55,7 +55,17 @@ def main():
     savedCursor = (0, 0)
     #start frame grabbing
     while True:
-        success, img = cap.read()
+        # Grab a fresh frame each pass, retrying until the camera yields one.
+        #
+        # Two things were wrong here. `img == None` is an element-wise NumPy
+        # comparison once img holds a frame, returning an array that `while`
+        # cannot evaluate (older NumPy returned a scalar False, so it once
+        # worked). And img was only set to None before the loop, so after the
+        # first frame the read was skipped forever and the same image was
+        # reprocessed -- the crash was hiding that.
+        img = None
+        while img is None:
+            success, img = cap.read()
         #resize to native screen resolution
         img = cv2.resize(img, (detector.xScreenRes, detector.yScreenRes), interpolation=cv2.INTER_AREA)
         #flip image to enable control
@@ -137,7 +147,15 @@ def main():
                     scrollDetector = 2 #reset scroll state
             print(" ")
         cv2.imshow("Image", img)
-        cv2.waitKey(1)
+        # Quit with q or Esc. waitKey()'s return value used to be discarded, so
+        # nothing could stop the loop -- and with the OpenCV window focused,
+        # Ctrl+C never reached the process either.
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 27:
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
