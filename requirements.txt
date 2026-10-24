@@ -1,3 +1,6 @@
-mouse==0.7.1
-mediapipe==0.8.2
-opencv-python==4.3.0.36
+# mediapipe 0.8.2 was pinned here but has been removed from PyPI - the oldest
+# version still published is 0.10.30, so the old pin could not install at all.
+# Lower bounds rather than exact pins, so this keeps working as wheels change.
+mediapipe>=0.10
+opencv-python>=4.5
+mouse>=0.7.1
