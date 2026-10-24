@@ -21,15 +21,37 @@
 # SOFTWARE.
 
 import math
+import os
+import time
+from urllib.request import urlretrieve
+
 import cv2
 import mediapipe as mp
 import mouse
-import time
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 
 class GestureDetector:
+    # mediapipe removed the mp.solutions API; every version still on PyPI
+    # (0.10.30 and later) exposes only mp.tasks, so this uses HandLandmarker.
+    # Unlike solutions, the Tasks API does not carry its model internally -
+    # the .task bundle is a separate file that has to be found at runtime.
+    MODEL_FILENAME = "hand_landmarker.task"
+    MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker"
+                 "/hand_landmarker/float16/1/hand_landmarker.task")
+
     def __init__(self):
-        self.mpHands = mp.solutions.hands # init mediapipe mpHands
-        self.hands = self.mpHands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5) # init medipipe hand
+        options = vision.HandLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=self.modelPath()),
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        self.landmarker = vision.HandLandmarker.create_from_options(options)
+        self.startTime = time.time()   # VIDEO mode needs increasing timestamps
+        self.lastTimestampMs = -1
         self.fingerTipLmNumDef = [4, 8, 12, 16, 20] # init hand finger tips land mark numbers
         self.savedCursor = (0, 0)  # init last valid cursor position
         self.cTime = time.time()  # init previous click time to current time
@@ -41,6 +63,43 @@ class GestureDetector:
         self.detectInterval = 650 # init detect interval
         self.xScreenRes = 1920 #main monitor x resolution
         self.yScreenRes = 1080 #main monitor y resolution
+
+    @classmethod
+    def modelPath(cls):
+        """Locate the hand landmark bundle, fetching it once if it is absent.
+
+        Preferred location is beside this module, which is where the packaged
+        copy lands. Falling back to a download keeps the script working from a
+        bare checkout, or from an install that did not ship the package data.
+        """
+        local = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             cls.MODEL_FILENAME)
+        if os.path.exists(local):
+            return local
+
+        cacheDir = os.path.join(os.path.expanduser("~"),
+                                ".gesturecontrolmousescroll")
+        cached = os.path.join(cacheDir, cls.MODEL_FILENAME)
+        if not os.path.exists(cached):
+            os.makedirs(cacheDir, exist_ok=True)
+            print("Downloading hand landmark model to " + cached)
+            urlretrieve(cls.MODEL_URL, cached)
+        return cached
+
+    def detect(self, rgbFrame):
+        """Run the landmarker on one RGB frame and return its hand landmarks.
+
+        Returns a list of hands, each a list of landmarks carrying the same
+        .x/.y/.z normalised coordinates that solutions used to provide, so the
+        finger logic downstream is unchanged.
+        """
+        mpImage = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgbFrame)
+        # VIDEO mode rejects a timestamp that does not advance.
+        timestampMs = int((time.time() - self.startTime) * 1000)
+        if timestampMs <= self.lastTimestampMs:
+            timestampMs = self.lastTimestampMs + 1
+        self.lastTimestampMs = timestampMs
+        return self.landmarker.detect_for_video(mpImage, timestampMs).hand_landmarks
 
 def main():
     #init video caputre of webcam
@@ -72,14 +131,16 @@ def main():
         img = cv2.flip(img, 1)
 
         #start hand detection
-        detector.results = detector.hands.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        #Tasks API: a list of hands, each already a list of landmarks, where
+        #solutions returned objects carrying a .landmark sequence.
+        handLandmarks = detector.detect(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         landMarkListDetected = []
-        if detector.results.multi_hand_landmarks:
+        if handLandmarks:
             scr_heigth, scr_width, _ = img.shape
             #iterate over the hands
-            for handLms in detector.results.multi_hand_landmarks:
+            for handLms in handLandmarks:
                 #iterate over landmarks
-                for lmNum, lmCoord in enumerate(handLms.landmark):
+                for lmCoord in handLms:
                     normX, normY, normZ = int(lmCoord.x * scr_width), int(lmCoord.y * scr_heigth), int(lmCoord.z)
                     landMarkListDetected.append([normX, normY, normZ])
 
@@ -97,6 +158,13 @@ def main():
                 else:
                     fingersDetected.append(0) #finger not up
             
+            #show which fingers are seen as up: index 0 is the thumb, which is
+            #hardcoded to 0, then index, middle, ring, pinky. The gestures below
+            #compare this list exactly, so a single stray 1 stops them matching.
+            print("fingers:", fingersDetected)
+            cv2.putText(img, str(fingersDetected), (10, 30),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+
             #print cursor location point
             cv2.circle(img, cursor, 5, (0, 0, 255), cv2.FILLED)
             
